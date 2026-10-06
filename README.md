@@ -70,8 +70,8 @@ indicador:
 
 Adicione uma linha na aba `Indicadores`:
 
-| Área | Indicador | Fonte | Parâmetro 1 | Parâmetro 2 | Parâmetro 3 | Unidade | Periodicidade | Ativo |
-|---|---|---|---|---|---|---|---|---|
+| Área | Indicador | Fonte | Parâmetro 1 | Parâmetro 2 | Parâmetro 3 | Unidade | Periodicidade | Ativo | Agregação Anual |
+|---|---|---|---|---|---|---|---|---|---|
 
 - **Fonte = `BCB`**: Parâmetro 1 = código da série no [SGS do Banco
   Central](https://www3.bcb.gov.br/sgspub).
@@ -79,6 +79,8 @@ Adicione uma linha na aba `Indicadores`:
   variável, Parâmetro 3 = localidade (ex: `N1[all]` para Brasil). Ids podem
   ser encontrados em [sidra.ibge.gov.br](https://sidra.ibge.gov.br) ou via
   `https://servicodados.ibge.gov.br/api/v3/agregados/{id}/metadados`.
+- **Agregação Anual** (opcional, padrão `MEDIA` se em branco): `MEDIA` ou
+  `ACUMULADO` — ver "Formato da Matriz Comparativa" acima.
 - **Fonte = `MANUAL`**: não precisa de parâmetros. Baixe os dados oficiais e
   cole na aba `Importação Manual` (colunas: Indicador — precisa ser
   **idêntico** ao nome usado em `Indicadores` —, Data, Valor, Observação).

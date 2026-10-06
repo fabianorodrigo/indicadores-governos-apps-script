@@ -10,16 +10,32 @@ function atualizarIndicadores() {
     return;
   }
 
+  // Busca sempre desde 1º de janeiro de 1 ano antes do mandato mais antigo
+  // cadastrado: dá margem para agregações que precisam de um ano anterior
+  // como base de comparação, em vez de retornar "-" no primeiro ano de um
+  // mandato. FonteBcb.fetchSerie busca anos-calendário completos a partir
+  // de (anoAtual - anosHistorico + 1), por isso o "+ 2" aqui.
+  const mandatos = getMandatos();
+  const anoAtual = new Date().getFullYear();
+  const anoMaisAntigo = mandatos.length > 0
+    ? Math.min(...mandatos.map(m => m.inicio.getFullYear()))
+    : anoAtual - 25;
+  const anosHistorico = Math.max(anoAtual - anoMaisAntigo + 2, 2);
+
   const linhas = [];
 
   config.forEach(ind => {
     let serie = [];
     switch (ind.fonte) {
       case FONTES.BCB:
-        serie = FonteBcb.fetchSerie(ind.parametro1);
+        // Pequena pausa antes de cada chamada ao BCB: evita disparar o
+        // limite de requisições em sequência rápida do gateway (Azure Front
+        // Door) que causava respostas vazias/erro (ver fontes/bcb.js).
+        Utilities.sleep(800);
+        serie = FonteBcb.fetchSerie(ind.parametro1, anosHistorico);
         break;
       case FONTES.SIDRA:
-        serie = FonteSidra.fetchSerie(ind.parametro1, ind.parametro2, ind.parametro3);
+        serie = FonteSidra.fetchSerie(ind.parametro1, ind.parametro2, ind.parametro3, ind.parametro4);
         break;
       case FONTES.MANUAL:
         serie = FonteManual.fetchSerie(ind.indicador);

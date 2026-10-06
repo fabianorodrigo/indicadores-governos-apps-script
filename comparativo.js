@@ -5,7 +5,9 @@
  *   Linha 2: Área | Indicador | Unidade | 2011 | 2012 | ... | 2026
  *   Linhas seguintes: um indicador por linha, com o valor anual resumido
  *   conforme a "Agregação Anual" configurada na aba "Indicadores"
- *   (MEDIA ou ACUMULADO — ver config.js).
+ *   (MEDIA, ACUMULADO ou ULTIMO — ver config.js), mais indicadores
+ *   calculados que não vêm de nenhuma fonte (ex: Juros Real, derivado de
+ *   outros dois indicadores já presentes — ver adicionarJurosReal_).
  */
 function gerarMatrizComparativa() {
   const mandatos = getMandatos();
@@ -68,31 +70,102 @@ function gerarMatrizComparativa() {
     return Number(((fator - 1) * 100).toFixed(2));
   }
 
+  /** Último ponto do ano (ex: taxas que a própria fonte já publica
+   *  acumuladas/consolidadas, como o crescimento real do PIB do IBGE — o
+   *  valor do 4º trimestre já É a taxa do ano; não há o que resumir). */
+  function ultimoDoAno(pontos, ano) {
+    const doAno = pontos.filter(p => p.data.getFullYear() === ano);
+    if (doAno.length === 0) return "-";
+    return doAno[doAno.length - 1].valor;
+  }
+
+  /** Para ACUMULADO: ano encerrado usa o calendário; ano em curso usa os
+   *  últimos 12 meses disponíveis (janela "rolante"). */
+  function janelaDoAno(pontos, ano) {
+    return ano < anoAtual
+      ? pontos.filter(p => p.data.getFullYear() === ano)
+      : pontos.slice(-12);
+  }
+
   function valorDoAno(g, ano) {
-    if (g.agregacao !== "ACUMULADO") return mediaDoAno(g.pontos, ano);
-
-    if (ano > anoAtual) return "-"; // ano futuro, sem dados ainda
-
-    if (ano < anoAtual) {
-      // Ano encerrado: acumulado do calendário (Jan-Dez daquele ano).
-      return acumulado(g.pontos.filter(p => p.data.getFullYear() === ano));
-    }
-
-    // Ano em curso (ainda não encerrado): acumulado dos últimos 12 meses
-    // disponíveis, mesmo que isso inclua meses do ano anterior.
-    return acumulado(g.pontos.slice(-12));
+    if (ano > anoAtual && g.agregacao === "ACUMULADO") return "-"; // ano futuro, sem dados ainda
+    if (g.agregacao === "ACUMULADO") return acumulado(janelaDoAno(g.pontos, ano));
+    if (g.agregacao === "ULTIMO") return ultimoDoAno(g.pontos, ano);
+    return mediaDoAno(g.pontos, ano);
   }
 
   const linhasDados = grupos.map(g => {
-    const linha = [g.area, g.indicador, g.unidade];
+    // ACUMULADO sempre resulta em variação percentual, mesmo quando o dado
+    // bruto (em Histórico) tem outra unidade (ex: R$ milhões).
+    const unidadeExibida = g.agregacao === "ACUMULADO" ? "%" : g.unidade;
+    const linha = [g.area, g.indicador, unidadeExibida];
     anos.forEach(ano => linha.push(valorDoAno(g, ano)));
     return linha;
   });
+
+  adicionarJurosReal_(grupos, anos, valorDoAno, linhasDados);
+  adicionarCestasPorSalarioMinimo_(grupos, anos, valorDoAno, linhasDados);
+
+  // Ordena por Área e, dentro da área, por Indicador (colunas A e B).
+  linhasDados.sort((a, b) => a[0].localeCompare(b[0], "pt-BR") || a[1].localeCompare(b[1], "pt-BR"));
 
   const sheet = getOrCreateSheet_(SHEETS.MATRIZ_COMPARATIVA);
   escreverMatrizComAnos_(sheet, mandatos, anos, linhasDados);
 
   Logger.log(`Matriz Comparativa gerada com ${linhasDados.length} indicador(es) e ${anos.length} ano(s) (${anoInicial}–${anoFinal}).`);
+}
+
+/**
+ * Indicador calculado (não vem de nenhuma fonte/Histórico): Juros Real, via
+ * equação de Fisher a partir dos valores anuais já calculados de "IPCA" e
+ * "Taxa Selic (Meta) — Média Anual". Se qualquer um dos dois nomes não for
+ * encontrado (ex: foram renomeados), não adiciona linha nenhuma — só avisa
+ * no log, em vez de quebrar a geração da matriz inteira.
+ */
+function adicionarJurosReal_(grupos, anos, valorDoAno, linhasDados) {
+  const grupoIpca = grupos.find(g => g.indicador === "IPCA");
+  const grupoSelic = grupos.find(g => g.indicador === "Taxa Selic (Meta) — Média Anual");
+  if (!grupoIpca || !grupoSelic) {
+    Logger.log('Juros Real não calculado: indicador "IPCA" e/ou "Taxa Selic (Meta) — Média Anual" não encontrado em Histórico.');
+    return;
+  }
+
+  const linha = ["Economia", "Juros Real (Selic − IPCA, Fisher)", "%"];
+  anos.forEach(ano => {
+    const selic = valorDoAno(grupoSelic, ano);
+    const ipca = valorDoAno(grupoIpca, ano);
+    if (selic === "-" || ipca === "-") {
+      linha.push("-");
+      return;
+    }
+    const jurosReal = ((1 + selic / 100) / (1 + ipca / 100) - 1) * 100;
+    linha.push(Number(jurosReal.toFixed(2)));
+  });
+  linhasDados.push(linha);
+}
+
+/**
+ * Indicador calculado: quantas Cestas Básicas (São Paulo) um Salário Mínimo
+ * compra, dividindo os valores anuais já calculados dos dois indicadores.
+ * "Preço da Cesta Básica (São Paulo)" é MANUAL (sem API — ver README); se a
+ * aba "Importação Manual" não tiver sido preenchida com valores reais do
+ * DIEESE, o indicador não aparece (sem dado) em vez de aparecer com "-".
+ */
+function adicionarCestasPorSalarioMinimo_(grupos, anos, valorDoAno, linhasDados) {
+  const grupoSalario = grupos.find(g => g.indicador === "Salário Mínimo (R$)");
+  const grupoCesta = grupos.find(g => g.indicador === "Preço da Cesta Básica (São Paulo)");
+  if (!grupoSalario || !grupoCesta) {
+    Logger.log('Cestas por Salário Mínimo não calculado: indicador "Salário Mínimo (R$)" e/ou "Preço da Cesta Básica (São Paulo)" não encontrado em Histórico.');
+    return;
+  }
+
+  const linha = ["Economia", "Cestas Básicas por Salário Mínimo (SP)", "cestas"];
+  anos.forEach(ano => {
+    const salario = valorDoAno(grupoSalario, ano);
+    const cesta = valorDoAno(grupoCesta, ano);
+    linha.push(salario === "-" || cesta === "-" || cesta === 0 ? "-" : Number((salario / cesta).toFixed(2)));
+  });
+  linhasDados.push(linha);
 }
 
 /** Retorna o mandato com mais dias de overlap com o ano informado, ou null. */

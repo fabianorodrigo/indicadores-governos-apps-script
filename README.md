@@ -22,6 +22,30 @@ Google Apps Script.
 6. Opcional: rode **"Configurar atualização automática mensal"** para que o
    fluxo rode sozinho todo dia 1 do mês.
 
+### Se um indicador do BCB sumir da Matriz Comparativa sem erro visível
+
+A API do BCB (hospedada num Azure Front Door) às vezes rejeita chamadas
+feitas em sequência muito rápida — responde com HTTP 406 ou com uma página
+de erro em XML em vez do JSON esperado. Como isso não lança uma exceção que
+interrompe o script, o indicador afetado simplesmente fica sem nenhuma linha
+em `Histórico` e desaparece da `Matriz Comparativa`, sem nenhum aviso na
+tela. Para confirmar: abra o editor do Apps Script → Execuções → veja o log
+da execução — a linha "N ponto(s) importado(s)" vai mostrar `0` para o
+indicador afetado, com um erro de BCB imediatamente antes. `fontes/bcb.js`
+já tenta de novo automaticamente (até 3 vezes, com espera crescente) e
+`sincronizacao.js` espera entre as chamadas ao BCB para evitar disparar
+esse limite; se mesmo assim continuar faltando, rode "Atualizar tudo agora"
+de novo — tende a ser intermitente do lado do BCB, não um problema de dados.
+
+Um caso específico desse mesmo sintoma: séries **diárias** do BCB (ex: Selic,
+SGS `432`, que repete o mesmo valor todo dia até o Copom mudar a meta) geram
+muito mais pontos do que séries mensais (IPCA, Dívida Bruta). Pedir muitos
+anos de uma vez nessas séries faz a API do BCB travar/responder muito devagar
+(observado: uma janela de 16 anos não respondeu em 30s). Por isso
+`fontes/bcb.js` busca em janelas de no máximo `JANELA_MAX_ANOS` (5) anos por
+vez e concatena o resultado, em vez de pedir o histórico completo numa única
+chamada.
+
 ## Arquitetura
 
 - `config.js` — nomes de abas, utilitários de planilha/data e leitura das
@@ -48,7 +72,8 @@ indicador:
 | | | | **Governo A** | | **Governo B** | |
 |---|---|---|---|---|---|---|
 | Área | Indicador | Unidade | 2015 | 2016 | ... | 2022 |
-| Economia | IPCA Mensal | % | 6.3 | 10.7 | ... | 5.8 |
+| Economia | IPCA | % | 6.3 | 10.7 | ... | 5.8 |
+| Economia | PIB (Crescimento Real) | % | -3.5 | -3.3 | ... | 2.0 |
 | Segurança | Taxa de Homicídios... | óbitos/100k | 28.5 | 29.7 | ... | 21.0 |
 
 - O intervalo de anos vai do início do mandato mais antigo ao fim do mais
@@ -58,29 +83,77 @@ indicador:
   overlap naquele ano — relevante só no ano de transição entre mandatos.
 - Indicadores mensais/trimestrais entram resumidos por ano conforme a coluna
   **"Agregação Anual"** da aba `Indicadores`:
-  - `MEDIA` (padrão — Selic, PIB, Taxa de Desocupação etc.): média aritmética
-    dos pontos do ano.
-  - `ACUMULADO` (ex: IPCA Mensal): acumulado composto do ano — `(1+v1%) ×
-    (1+v2%) × ... × (1+vn%) − 1`. Para o **ano em curso** (ainda não
-    encerrado, ex: 2026 hoje), usa o acumulado dos **últimos 12 meses
-    disponíveis** em vez do ano-calendário incompleto.
-- Ano sem nenhum ponto de dado para o indicador aparece como `-`.
+  - `MEDIA` (padrão — Selic, Taxa de Desocupação etc.): média aritmética dos
+    pontos do ano.
+  - `ACUMULADO` (séries de **taxa**, ex: IPCA — cada ponto já é um % de
+    variação): acumulado composto do ano — `(1+v1%) × (1+v2%) × ... ×
+    (1+vn%) − 1`. No **ano em curso** (ainda não encerrado, ex: 2026 hoje),
+    usa a janela dos **últimos 12 meses disponíveis** em vez do
+    ano-calendário incompleto.
+    A coluna "Unidade" é exibida como `%` para `ACUMULADO`, mesmo que o dado
+    bruto em `Histórico` esteja em outra unidade.
+  - `ULTIMO` (séries que a própria fonte já publica acumuladas/consolidadas,
+    ex: PIB — ver "Nota sobre o PIB" abaixo): usa o último ponto disponível
+    do ano, sem recalcular nada.
+- Ano sem nenhum ponto de dado — ou sem base de comparação no ano anterior,
+  no caso de `ACUMULADO` — aparece como `-`. `atualizarIndicadores()` sempre
+  busca, para fontes `BCB`, a partir de 1º de janeiro de **um ano antes** do
+  mandato mais antigo cadastrado, justamente para que o primeiro ano de um
+  mandato já tenha base de comparação e não caia nesse caso.
+- Além dos indicadores da aba `Indicadores`, a matriz pode ter **indicadores
+  calculados**, que não vêm de nenhuma fonte/Histórico — calculados em
+  `comparativo.js` a partir dos valores anuais já resumidos de outros dois
+  indicadores. Não aparecem na aba `Indicadores` porque não há nada para
+  sincronizar; se você renomear qualquer um dos indicadores-base, o
+  calculado some da matriz (e um aviso aparece no log). Hoje existem dois:
+  - **Juros Real** (Selic − IPCA, equação de Fisher) — `adicionarJurosReal_`.
+  - **Cestas Básicas por Salário Mínimo (SP)** — Salário Mínimo ÷ Preço da
+    Cesta Básica (São Paulo) — `adicionarCestasPorSalarioMinimo_`. Como o
+    preço da cesta é `MANUAL` (ver abaixo), esse indicador só tem valor nos
+    anos em que você preencheu a aba `Importação Manual` com dados reais do
+    DIEESE.
+
+### Nota sobre o PIB: nominal vs. real
+
+A primeira versão deste indicador usava a série mensal do Banco Central
+(SGS `4380`, "PIB mensal — valores correntes") e calculava o crescimento
+comparando a soma nominal (R$) de um ano com a do anterior. O resultado
+**não batia** com o crescimento do PIB oficialmente divulgado, porque essa
+série é **nominal** (inclui inflação), enquanto o "crescimento do PIB" que
+o IBGE divulga é sempre em termos **reais** (volume, já deflacionado).
+
+A correção: usar a taxa real já calculada e publicada pelo próprio IBGE —
+tabela SIDRA `5932` ("Taxa de variação do índice de volume trimestral"),
+variável `6563` ("Taxa acumulada ao longo do ano"), filtrada para a
+categoria "PIB a preços de mercado" (classificação `11255[90707]`). O valor
+do 4º trimestre de cada ano já É a taxa de crescimento anual oficial —
+confirmado comparando manualmente 14 anos (2011–2025) contra os números
+publicados pelo IBGE, com diferença em apenas 1 ano (0,1 p.p., provável
+revisão de vintage).
 
 ## Como adicionar um indicador
 
 Adicione uma linha na aba `Indicadores`:
 
-| Área | Indicador | Fonte | Parâmetro 1 | Parâmetro 2 | Parâmetro 3 | Unidade | Periodicidade | Ativo | Agregação Anual |
-|---|---|---|---|---|---|---|---|---|---|
+| Área | Indicador | Fonte | Parâmetro 1 | Parâmetro 2 | Parâmetro 3 | Unidade | Periodicidade | Ativo | Agregação Anual | Parâmetro 4 (Classificação SIDRA) |
+|---|---|---|---|---|---|---|---|---|---|---|
 
 - **Fonte = `BCB`**: Parâmetro 1 = código da série no [SGS do Banco
-  Central](https://www3.bcb.gov.br/sgspub).
+  Central](https://www3.bcb.gov.br/sgspub). Use o código **negativo** (ex:
+  `-5793`) se a série tiver convenção de sinal oposta à que você quer exibir
+  — é o caso do Resultado Primário/Nominal (séries `5793`/`5727`), publicadas
+  como NFSP (positivo = déficit), invertido em relação ao "Resultado" fiscal
+  que a imprensa divulga (negativo = déficit). `fontes/bcb.js` inverte o
+  sinal de todos os pontos quando o código é negativo.
 - **Fonte = `SIDRA`**: Parâmetro 1 = id do agregado, Parâmetro 2 = id da
   variável, Parâmetro 3 = localidade (ex: `N1[all]` para Brasil). Ids podem
   ser encontrados em [sidra.ibge.gov.br](https://sidra.ibge.gov.br) ou via
   `https://servicodados.ibge.gov.br/api/v3/agregados/{id}/metadados`.
-- **Agregação Anual** (opcional, padrão `MEDIA` se em branco): `MEDIA` ou
-  `ACUMULADO` — ver "Formato da Matriz Comparativa" acima.
+  Parâmetro 4 é opcional: só é necessário quando a tabela tem uma
+  classificação que precisa ser filtrada para não misturar categorias (ex:
+  `11255[90707]` para pegar só "PIB a preços de mercado" na tabela 5932).
+- **Agregação Anual** (opcional, padrão `MEDIA` se em branco): `MEDIA`,
+  `ACUMULADO` ou `ULTIMO` — ver "Formato da Matriz Comparativa" acima.
 - **Fonte = `MANUAL`**: não precisa de parâmetros. Baixe os dados oficiais e
   cole na aba `Importação Manual` (colunas: Indicador — precisa ser
   **idêntico** ao nome usado em `Indicadores` —, Data, Valor, Observação).
@@ -129,12 +202,16 @@ foi verificado (não é só suposição) ao montar este projeto:
   mas é geoespacial (WMS/WFS, GeoTIFF/GeoPackage com polígonos) — não uma
   tabela simples de "km² desmatados por ano". Extrair a taxa anual a partir
   disso exigiria processamento geoespacial fora do escopo do Apps Script.
+- **Preço da Cesta Básica.** O DIEESE é a única referência no Brasil, mas só
+  publica relatórios em PDF mensais por capital (dieese.org.br/analisecestabasica)
+  — não há média nacional oficial, e o banco histórico público que eles
+  tinham foi descontinuado em 2018.
 
 Resumindo: a barreira não é "não tem dados abertos", é "o dado aberto que
 existe é descontinuado, é microdado bruto demais, é geoespacial, ou está
 atualmente sem uma forma simples e verificada de acesso automático". Se você
 quiser investir mais nisso — por exemplo, baixar e agendar a leitura de um
-CSV fixo do SINESP, ou estender `fontes/sidra.js` para suportar consultas por
-classificação (tabela 7362) — são extensões razoáveis do mesmo padrão de
-`fetchSerie(...)` retornando `[{ data: Date, valor: Number }]`, registradas
-em `sincronizacao.js`.
+CSV fixo do SINESP, ou estender `fontes/sidra.js` para suportar o formato de
+consulta por classificação de ano da tabela `7362` (expectativa de vida) —
+são extensões razoáveis do mesmo padrão de `fetchSerie(...)` retornando
+`[{ data: Date, valor: Number }]`, registradas em `sincronizacao.js`.

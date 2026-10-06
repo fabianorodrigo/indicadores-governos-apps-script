@@ -7,11 +7,17 @@
  * (DATASUS) ou segurança pública (SSP/SINESP), que exigem FonteManual.
  */
 const FonteSidra = {
-  /** Retorna [{ data: Date, valor: Number }] para o agregado/variável informados. */
-  fetchSerie(agregado, variavel, localidade) {
+  /**
+   * Retorna [{ data: Date, valor: Number }] para o agregado/variável
+   * informados. `classificacao` é opcional (ex: "11255[90707]") e filtra a
+   * tabela a uma única categoria — necessário em tabelas que, sem esse
+   * filtro, devolvem várias categorias misturadas (ex: setores do PIB).
+   */
+  fetchSerie(agregado, variavel, localidade, classificacao) {
     localidade = localidade || "N1[all]";
-    const url = `https://servicodados.ibge.gov.br/api/v3/agregados/${agregado}` +
+    let url = `https://servicodados.ibge.gov.br/api/v3/agregados/${agregado}` +
       `/periodos/-120/variaveis/${variavel}?localidades=${localidade}`;
+    if (classificacao) url += `&classificacao=${classificacao}`;
 
     try {
       const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });

@@ -68,13 +68,20 @@ function getMandatos() {
 /**
  * Lê a aba "Indicadores" e retorna a configuração de cada indicador ativo.
  * Colunas: Área, Indicador, Fonte, Parâmetro 1, Parâmetro 2, Parâmetro 3,
- * Unidade, Periodicidade, Ativo, Agregação Anual.
+ * Unidade, Periodicidade, Ativo, Agregação Anual, Parâmetro 4 (Classificação SIDRA).
  *
  * Agregação Anual controla como a Matriz Comparativa resume pontos
  * sub-anuais (mensais/trimestrais) em um único valor por ano:
  * - "MEDIA" (padrão): média aritmética dos pontos do ano.
  * - "ACUMULADO": acumulado composto do ano (ex: IPCA); para o ano em curso
  *   (ainda não encerrado), usa o acumulado dos últimos 12 meses disponíveis.
+ * - "ULTIMO": último ponto disponível do ano (ex: taxas que já vêm
+ *   acumuladas/consolidadas na própria fonte, como o crescimento real do
+ *   PIB do IBGE — o valor do 4º trimestre já É a taxa anual).
+ *
+ * Parâmetro 4 é opcional: usado só por fontes SIDRA cuja tabela exige um
+ * filtro de classificação (ex: "11255[90707]" para escolher "PIB a preços
+ * de mercado" dentro de uma tabela com várias categorias).
  */
 function getIndicadoresConfig() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.INDICADORES);
@@ -91,6 +98,7 @@ function getIndicadoresConfig() {
       parametro3: r[5],
       unidade: String(r[6] || ""),
       periodicidade: String(r[7] || ""),
-      agregacao: r[9] ? String(r[9]).toUpperCase() : "MEDIA"
+      agregacao: r[9] ? String(r[9]).toUpperCase() : "MEDIA",
+      parametro4: r[10] || ""
     }));
 }
